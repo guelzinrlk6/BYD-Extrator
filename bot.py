@@ -215,8 +215,8 @@ def baixar_medal(link, qualidade):
             str(info["id"])
         )
 
-        for extensao in [".mp4", ".webm", ".mkv", ".mov"]:
-        possivel = arquivo_base + extensao
-        if os.path.exists(possivel):
+for extensao in [".mp4", ".webm", ".mkv", ".mov"]:
+    possivel = arquivo_base + extensao
+    if os.path.exists(possivel):
         arquivo_saida = possivel
         break
