@@ -217,4 +217,3 @@ def baixar_medal(link, qualidade):
         )
 
         for extensao in [
-```
