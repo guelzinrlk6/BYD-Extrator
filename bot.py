@@ -4,10 +4,9 @@ import yt_dlp
 import os
 import asyncio
 import glob
-
-# =========================================================
-# CONFIGURAÇÃO
-# =========================================================
+import shutil
+import subprocess
+import re
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -17,81 +16,246 @@ PASTA_VIDEOS = "videos"
 os.makedirs(PASTA_AUDIOS, exist_ok=True)
 os.makedirs(PASTA_VIDEOS, exist_ok=True)
 
-# Limite de segurança abaixo dos 25 MB
 LIMITE_DISCORD = 24 * 1024 * 1024
 
 intents = discord.Intents.default()
-
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 
-# =========================================================
-# FUNÇÕES AUXILIARES
-# =========================================================
-
 def apagar_arquivo(arquivo):
-    """Apaga um arquivo sem deixar o bot quebrar se ele não existir."""
     try:
         if arquivo and os.path.exists(arquivo):
             os.remove(arquivo)
     except Exception as erro:
-        print(f"AVISO: não consegui apagar arquivo: {erro}")
+        print(f"AVISO AO APAGAR ARQUIVO: {erro}")
 
 
-def limpar_arquivos_pasta(pasta):
-    """Limpa arquivos temporários antigos."""
+def encontrar_ffmpeg():
+    ffmpeg = shutil.which("ffmpeg")
+
+    if ffmpeg:
+        return ffmpeg
+
     try:
-        for arquivo in glob.glob(os.path.join(pasta, "*")):
-            if os.path.isfile(arquivo):
-                apagar_arquivo(arquivo)
-    except Exception as erro:
-        print(f"AVISO AO LIMPAR PASTA: {erro}")
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
-# =========================================================
-# DOWNLOAD DE ÁUDIO DO TIKTOK
-# =========================================================
+def comprimir_video(arquivo):
+
+    ffmpeg = encontrar_ffmpeg()
+
+    if not ffmpeg:
+        raise RuntimeError(
+            "FFmpeg não encontrado."
+        )
+
+    tamanho_original = os.path.getsize(arquivo)
+
+    if tamanho_original <= LIMITE_DISCORD:
+        return arquivo
+
+    arquivo_temp = os.path.join(
+        PASTA_VIDEOS,
+        "temp_" + os.path.basename(arquivo)
+    )
+
+    duracao = 60
+
+    try:
+        resultado = subprocess.run(
+            [
+                ffmpeg,
+                "-i",
+                arquivo
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        encontrado = re.search(
+            r"Duration:\s*(\d+):(\d+):([\d.]+)",
+            resultado.stderr
+        )
+
+        if encontrado:
+            horas = int(encontrado.group(1))
+            minutos = int(encontrado.group(2))
+            segundos = float(encontrado.group(3))
+
+            duracao = (
+                horas * 3600
+                + minutos * 60
+                + segundos
+            )
+
+    except Exception:
+        duracao = 60
+
+    if duracao <= 0:
+        duracao = 60
+
+    bitrate_total = int(
+        (22 * 1024 * 1024 * 8) / duracao
+    )
+
+    bitrate_video = int(
+        bitrate_total * 0.88
+    )
+
+    bitrate_video = max(
+        bitrate_video,
+        250000
+    )
+
+    comando = [
+        ffmpeg,
+        "-y",
+        "-i",
+        arquivo,
+        "-vf",
+        "scale='min(854,iw)':-2",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        str(bitrate_video),
+        "-maxrate",
+        str(bitrate_video),
+        "-bufsize",
+        str(bitrate_video * 2),
+        "-c:a",
+        "aac",
+        "-b:a",
+        "96000",
+        "-movflags",
+        "+faststart",
+        arquivo_temp
+    ]
+
+    print(
+        f"🗜️ Comprimindo "
+        f"{tamanho_original / 1024 / 1024:.2f} MB..."
+    )
+
+    resultado = subprocess.run(
+        comando,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if resultado.returncode != 0:
+
+        print(resultado.stderr[-3000:])
+
+        apagar_arquivo(arquivo_temp)
+
+        raise RuntimeError(
+            "Erro ao comprimir o vídeo."
+        )
+
+    if not os.path.exists(arquivo_temp):
+
+        raise RuntimeError(
+            "FFmpeg não criou o vídeo."
+        )
+
+    tamanho_novo = os.path.getsize(
+        arquivo_temp
+    )
+
+    print(
+        f"📦 Após compressão: "
+        f"{tamanho_novo / 1024 / 1024:.2f} MB"
+    )
+
+    if tamanho_novo > LIMITE_DISCORD:
+
+        apagar_arquivo(arquivo_temp)
+
+        bitrate_video = int(
+            bitrate_video * 0.55
+        )
+
+        comando[10] = str(bitrate_video)
+        comando[12] = str(bitrate_video)
+        comando[-1] = arquivo_temp
+
+        resultado = subprocess.run(
+            comando,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if resultado.returncode != 0:
+            apagar_arquivo(arquivo_temp)
+
+            raise RuntimeError(
+                "Segunda compressão falhou."
+            )
+
+        tamanho_novo = os.path.getsize(
+            arquivo_temp
+        )
+
+        print(
+            f"📦 Segunda compressão: "
+            f"{tamanho_novo / 1024 / 1024:.2f} MB"
+        )
+
+    if tamanho_novo > LIMITE_DISCORD:
+
+        apagar_arquivo(arquivo_temp)
+
+        raise RuntimeError(
+            "O vídeo continua maior que 24 MB."
+        )
+
+    apagar_arquivo(arquivo)
+
+    os.rename(
+        arquivo_temp,
+        arquivo
+    )
+
+    return arquivo
+
 
 def baixar_audio_tiktok(link):
 
     opcoes = {
         "format": "bestaudio/best",
-
         "outtmpl": os.path.join(
             PASTA_AUDIOS,
             "%(id)s.%(ext)s"
         ),
-
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "192",
+                "preferredquality": "192"
             }
         ],
-
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-
-        # Evita alguns problemas de rede
         "retries": 3,
-        "fragment_retries": 3,
+        "fragment_retries": 3
     }
 
     with yt_dlp.YoutubeDL(opcoes) as ydl:
-        info = ydl.extract_info(
+        return ydl.extract_info(
             link,
             download=True
         )
 
-    return info
-
-
-# =========================================================
-# COMANDO /EXTRAIR
-# =========================================================
 
 @tree.command(
     name="extrair",
@@ -105,7 +269,6 @@ async def extrair(
     link: str
 ):
 
-    # Verifica o link
     if "tiktok.com" not in link.lower():
 
         await interaction.response.send_message(
@@ -115,8 +278,6 @@ async def extrair(
 
         return
 
-    # IMPORTANTE:
-    # defer evita o erro Unknown interaction
     await interaction.response.defer()
 
     arquivo = None
@@ -124,12 +285,9 @@ async def extrair(
     try:
 
         await interaction.edit_original_response(
-            content="⏳ Extraindo o áudio do TikTok..."
+            content="⏳ Extraindo o áudio..."
         )
 
-        print("🎵 Iniciando download do TikTok...")
-
-        # yt-dlp roda fora da thread principal
         info = await asyncio.to_thread(
             baixar_audio_tiktok,
             link
@@ -140,76 +298,44 @@ async def extrair(
             f"{info['id']}.mp3"
         )
 
-        # Confirma se o MP3 existe
         if not os.path.exists(arquivo):
 
             raise FileNotFoundError(
-                "O MP3 não foi encontrado após o download."
+                "MP3 não encontrado."
             )
 
-        tamanho = os.path.getsize(arquivo)
-
-        tamanho_mb = tamanho / 1024 / 1024
-
-        print(
-            f"📦 Tamanho do áudio: {tamanho_mb:.2f} MB"
+        tamanho = os.path.getsize(
+            arquivo
         )
 
-        # Segurança
         if tamanho > LIMITE_DISCORD:
 
             apagar_arquivo(arquivo)
             arquivo = None
 
             await interaction.edit_original_response(
-                content=(
-                    "❌ O áudio ficou maior que 24 MB "
-                    "e não pode ser enviado pelo Discord."
-                )
+                content="❌ O áudio ficou maior que 24 MB."
             )
 
             return
 
         await interaction.edit_original_response(
-            content="📤 Enviando o áudio para o Discord..."
+            content="📤 Enviando o áudio..."
         )
 
-        try:
+        await interaction.followup.send(
+            content=(
+                f"🎵 **Áudio extraído:** "
+                f"{info.get('title', 'TikTok')}"
+            ),
+            file=discord.File(arquivo)
+        )
 
-            await interaction.followup.send(
-                content=(
-                    f"🎵 **Áudio extraído:** "
-                    f"{info.get('title', 'TikTok')}"
-                ),
-                file=discord.File(arquivo)
-            )
-
-        except discord.HTTPException as erro:
-
-            print(f"❌ ERRO AO ENVIAR ÁUDIO: {erro}")
-
-            if getattr(erro, "status", None) == 413:
-
-                await interaction.edit_original_response(
-                    content=(
-                        "❌ O Discord recusou o arquivo "
-                        "porque ele ficou grande demais."
-                    )
-                )
-
-                return
-
-            raise
-
-        # Apaga depois do envio
         apagar_arquivo(arquivo)
-        arquivo = None
 
         await interaction.edit_original_response(
             content="✅ Áudio extraído com sucesso!"
         )
-
-        print("✅ TikTok concluído.")
 
     except Exception as erro:
 
@@ -221,21 +347,12 @@ async def extrair(
         apagar_arquivo(arquivo)
 
         try:
-
             await interaction.edit_original_response(
-                content=(
-                    "❌ Não consegui extrair esse TikTok.\n"
-                    "Verifique o link e tente novamente."
-                )
+                content="❌ Não consegui extrair esse TikTok."
             )
-
         except Exception:
             pass
 
-
-# =========================================================
-# DOWNLOAD DO MEDAL
-# =========================================================
 
 def baixar_medal(link, qualidade):
 
@@ -247,29 +364,17 @@ def baixar_medal(link, qualidade):
             "+bestaudio/"
             f"best[height<={qualidade}]/best"
         ),
-
         "outtmpl": os.path.join(
             PASTA_VIDEOS,
             "%(id)s.%(ext)s"
         ),
-
         "merge_output_format": "mp4",
-
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-
-        # Tentativas automáticas
         "retries": 3,
-        "fragment_retries": 3,
-
-        # Continua mesmo se algum formato específico falhar
-        "ignoreerrors": False,
+        "fragment_retries": 3
     }
-
-    print(
-        f"🎬 Iniciando download Medal em {qualidade}p..."
-    )
 
     with yt_dlp.YoutubeDL(opcoes) as ydl:
 
@@ -280,7 +385,7 @@ def baixar_medal(link, qualidade):
 
         if not info:
             raise RuntimeError(
-                "O Medal não retornou informações do vídeo."
+                "O Medal não retornou informações."
             )
 
         arquivo_base = os.path.join(
@@ -288,7 +393,6 @@ def baixar_medal(link, qualidade):
             str(info["id"])
         )
 
-        # Procura o arquivo final
         for extensao in [
             ".mp4",
             ".webm",
@@ -296,7 +400,9 @@ def baixar_medal(link, qualidade):
             ".mov"
         ]:
 
-            possivel = arquivo_base + extensao
+            possivel = (
+                arquivo_base + extensao
+            )
 
             if os.path.exists(possivel):
 
@@ -306,7 +412,6 @@ def baixar_medal(link, qualidade):
 
     if arquivo_saida is None:
 
-        # Segunda tentativa procurando qualquer arquivo
         arquivos = glob.glob(
             os.path.join(
                 PASTA_VIDEOS,
@@ -314,32 +419,17 @@ def baixar_medal(link, qualidade):
             )
         )
 
-        arquivos = [
-            arquivo
-            for arquivo in arquivos
-            if os.path.isfile(arquivo)
-        ]
-
         if arquivos:
-
             arquivo_saida = arquivos[0]
 
     if arquivo_saida is None:
 
         raise FileNotFoundError(
-            "O vídeo não foi encontrado depois do download."
+            "Vídeo não encontrado."
         )
-
-    print(
-        f"✅ Vídeo encontrado: {arquivo_saida}"
-    )
 
     return arquivo_saida, info
 
-
-# =========================================================
-# COMANDO /MEDAL
-# =========================================================
 
 @tree.command(
     name="medal",
@@ -353,7 +443,6 @@ async def medal(
     link: str
 ):
 
-    # Verifica o link
     if "medal.tv" not in link.lower():
 
         await interaction.response.send_message(
@@ -363,8 +452,6 @@ async def medal(
 
         return
 
-    # IMPORTANTE:
-    # evita Unknown interaction
     await interaction.response.defer()
 
     arquivo = None
@@ -372,155 +459,77 @@ async def medal(
 
     try:
 
-        await interaction.edit_original_response(
-            content="⏳ Baixando o clipe do Medal..."
+        for qualidade in [1080, 720, 480]:
+
+            await interaction.edit_original_response(
+                content=(
+                    f"🎬 Baixando o vídeo em "
+                    f"{qualidade}p..."
+                )
+            )
+
+            try:
+
+                arquivo, info = await asyncio.to_thread(
+                    baixar_medal,
+                    link,
+                    qualidade
+                )
+
+                if arquivo and os.path.exists(arquivo):
+
+                    tamanho = os.path.getsize(
+                        arquivo
+                    )
+
+                    print(
+                        f"📦 {qualidade}p: "
+                        f"{tamanho / 1024 / 1024:.2f} MB"
+                    )
+
+                    if tamanho <= LIMITE_DISCORD:
+                        break
+
+                    apagar_arquivo(arquivo)
+                    arquivo = None
+
+            except Exception as erro:
+
+                print(
+                    f"⚠️ Erro em {qualidade}p: "
+                    f"{type(erro).__name__}: {erro}"
+                )
+
+                apagar_arquivo(arquivo)
+                arquivo = None
+
+        if arquivo is None:
+
+            raise RuntimeError(
+                "Não foi possível baixar o vídeo."
+            )
+
+        tamanho = os.path.getsize(
+            arquivo
         )
 
-        # =================================================
-        # 1080P
-        # =================================================
-
-        print("🎬 Tentando 1080p...")
-
-        try:
-
-            arquivo, info = await asyncio.to_thread(
-                baixar_medal,
-                link,
-                1080
-            )
-
-        except Exception as erro:
-
-            print(
-                f"⚠️ Falha no 1080p: "
-                f"{type(erro).__name__}: {erro}"
-            )
-
-            arquivo = None
-
-        # Verifica tamanho
-        if arquivo and os.path.exists(arquivo):
-
-            tamanho = os.path.getsize(arquivo)
-
-            print(
-                f"📦 1080p: "
-                f"{tamanho / 1024 / 1024:.2f} MB"
-            )
-
-            if tamanho > LIMITE_DISCORD:
-
-                print(
-                    "⚠️ 1080p ficou grande demais."
-                )
-
-                apagar_arquivo(arquivo)
-                arquivo = None
-
-        # =================================================
-        # 720P
-        # =================================================
-
-        if arquivo is None:
+        if tamanho > LIMITE_DISCORD:
 
             await interaction.edit_original_response(
                 content=(
-                    "⚠️ 1080p ficou indisponível ou grande. "
-                    "Tentando 720p..."
+                    "🗜️ Vídeo grande. "
+                    "Comprimindo automaticamente..."
                 )
             )
 
-            print("🎬 Tentando 720p...")
-
-            try:
-
-                arquivo, info = await asyncio.to_thread(
-                    baixar_medal,
-                    link,
-                    720
-                )
-
-            except Exception as erro:
-
-                print(
-                    f"⚠️ Falha no 720p: "
-                    f"{type(erro).__name__}: {erro}"
-                )
-
-                arquivo = None
-
-        # Verifica tamanho
-        if arquivo and os.path.exists(arquivo):
-
-            tamanho = os.path.getsize(arquivo)
-
-            print(
-                f"📦 720p: "
-                f"{tamanho / 1024 / 1024:.2f} MB"
+            arquivo = await asyncio.to_thread(
+                comprimir_video,
+                arquivo
             )
 
-            if tamanho > LIMITE_DISCORD:
-
-                print(
-                    "⚠️ 720p ficou grande demais."
-                )
-
-                apagar_arquivo(arquivo)
-                arquivo = None
-
-        # =================================================
-        # 480P
-        # =================================================
-
-        if arquivo is None:
-
-            await interaction.edit_original_response(
-                content=(
-                    "⚠️ 720p também ficou indisponível ou grande. "
-                    "Tentando 480p..."
-                )
-            )
-
-            print("🎬 Tentando 480p...")
-
-            try:
-
-                arquivo, info = await asyncio.to_thread(
-                    baixar_medal,
-                    link,
-                    480
-                )
-
-            except Exception as erro:
-
-                print(
-                    f"⚠️ Falha no 480p: "
-                    f"{type(erro).__name__}: {erro}"
-                )
-
-                arquivo = None
-
-        # =================================================
-        # NENHUM ARQUIVO
-        # =================================================
-
-        if arquivo is None:
-
-            await interaction.edit_original_response(
-                content=(
-                    "❌ Não consegui baixar esse clipe "
-                    "em 1080p, 720p ou 480p."
-                )
-            )
-
-            return
-
-        # =================================================
-        # VERIFICA TAMANHO FINAL
-        # =================================================
-
-        tamanho = os.path.getsize(arquivo)
+        tamanho = os.path.getsize(
+            arquivo
+        )
 
         print(
             f"📦 Tamanho final: "
@@ -529,27 +538,13 @@ async def medal(
 
         if tamanho > LIMITE_DISCORD:
 
-            apagar_arquivo(arquivo)
-            arquivo = None
-
-            await interaction.edit_original_response(
-                content=(
-                    "❌ O vídeo continua maior que 24 MB "
-                    "mesmo em 480p."
-                )
+            raise RuntimeError(
+                "O vídeo continua maior que 24 MB."
             )
-
-            return
-
-        # =================================================
-        # ENVIO
-        # =================================================
 
         await interaction.edit_original_response(
             content="📤 Enviando o vídeo para o Discord..."
         )
-
-        print("📤 Enviando vídeo para o Discord...")
 
         try:
 
@@ -567,34 +562,22 @@ async def medal(
                 f"❌ ERRO DISCORD AO ENVIAR: {erro}"
             )
 
-            apagar_arquivo(arquivo)
-            arquivo = None
-
             if getattr(erro, "status", None) == 413:
 
-                await interaction.edit_original_response(
-                    content=(
-                        "❌ O Discord recusou o vídeo "
-                        "porque o arquivo ficou grande demais."
-                    )
+                raise RuntimeError(
+                    "O Discord recusou o arquivo por tamanho."
                 )
 
-                return
-
             raise
-
-        # =================================================
-        # FINALIZAÇÃO
-        # =================================================
 
         apagar_arquivo(arquivo)
         arquivo = None
 
         await interaction.edit_original_response(
-            content="✅ Clipe baixado com sucesso!"
+            content="✅ Clipe baixado e enviado com sucesso!"
         )
 
-        print("✅ Medal concluído com sucesso.")
+        print("✅ MEDAL CONCLUÍDO.")
 
     except Exception as erro:
 
@@ -609,18 +592,14 @@ async def medal(
 
             await interaction.edit_original_response(
                 content=(
-                    "❌ Não consegui baixar esse clipe do Medal.\n"
-                    "Veja os detalhes no log do Railway."
+                    f"❌ Não consegui enviar o vídeo.\n"
+                    f"Motivo: {erro}"
                 )
             )
 
         except Exception:
             pass
 
-
-# =========================================================
-# BOT ONLINE
-# =========================================================
 
 @bot.event
 async def on_ready():
@@ -639,19 +618,15 @@ async def on_ready():
     except Exception as erro:
 
         print(
-            f"❌ Erro ao sincronizar comandos: "
+            f"❌ ERRO AO SINCRONIZAR: "
             f"{type(erro).__name__}: {erro}"
         )
 
 
-# =========================================================
-# INICIAR BOT
-# =========================================================
-
 if not TOKEN:
 
     print(
-        "❌ ERRO: DISCORD_TOKEN não foi encontrado."
+        "❌ ERRO: DISCORD_TOKEN não encontrado."
     )
 
 else:
