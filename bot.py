@@ -216,7 +216,14 @@ def baixar_medal(link, qualidade):
         )
 
 for extensao in [".mp4", ".webm", ".mkv", ".mov"]:
-    possivel = arquivo_base + extensao
-    if os.path.exists(possivel):
-        arquivo_saida = possivel
-        break
+   possivel = arquivo_base + extensao
+   if os.path.exists(possivel):
+       arquivo_saida = possivel
+       break
+
+if arquivo_saida is None:
+    raise FileNotFoundError(
+        "Video nao foi encontrado depois do download."
+    )
+
+return arquivo_saida, info
