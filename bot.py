@@ -23,15 +23,20 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 
+# =========================================================
+# FUNÇÕES AUXILIARES
+# =========================================================
+
 def apagar_arquivo(arquivo):
     try:
         if arquivo and os.path.exists(arquivo):
             os.remove(arquivo)
     except Exception as erro:
-        print(f"AVISO AO APAGAR ARQUIVO: {erro}")
+        print(f"AVISO AO APAGAR: {erro}")
 
 
 def encontrar_ffmpeg():
+
     ffmpeg = shutil.which("ffmpeg")
 
     if ffmpeg:
@@ -44,6 +49,10 @@ def encontrar_ffmpeg():
         return None
 
 
+# =========================================================
+# COMPRIMIR VÍDEO
+# =========================================================
+
 def comprimir_video(arquivo):
 
     ffmpeg = encontrar_ffmpeg()
@@ -53,19 +62,20 @@ def comprimir_video(arquivo):
             "FFmpeg não encontrado."
         )
 
-    tamanho_original = os.path.getsize(arquivo)
+    tamanho = os.path.getsize(arquivo)
 
-    if tamanho_original <= LIMITE_DISCORD:
+    if tamanho <= LIMITE_DISCORD:
         return arquivo
 
     arquivo_temp = os.path.join(
         PASTA_VIDEOS,
-        "temp_" + os.path.basename(arquivo)
+        "temp_comprimido.mp4"
     )
 
     duracao = 60
 
     try:
+
         resultado = subprocess.run(
             [
                 ffmpeg,
@@ -83,6 +93,7 @@ def comprimir_video(arquivo):
         )
 
         if encontrado:
+
             horas = int(encontrado.group(1))
             minutos = int(encontrado.group(2))
             segundos = float(encontrado.group(3))
@@ -100,16 +111,16 @@ def comprimir_video(arquivo):
         duracao = 60
 
     bitrate_total = int(
-        (22 * 1024 * 1024 * 8) / duracao
+        (21 * 1024 * 1024 * 8) / duracao
     )
 
     bitrate_video = int(
-        bitrate_total * 0.88
+        bitrate_total * 0.85
     )
 
     bitrate_video = max(
         bitrate_video,
-        250000
+        180000
     )
 
     comando = [
@@ -132,7 +143,7 @@ def comprimir_video(arquivo):
         "-c:a",
         "aac",
         "-b:a",
-        "96000",
+        "64000",
         "-movflags",
         "+faststart",
         arquivo_temp
@@ -140,7 +151,7 @@ def comprimir_video(arquivo):
 
     print(
         f"🗜️ Comprimindo "
-        f"{tamanho_original / 1024 / 1024:.2f} MB..."
+        f"{tamanho / 1024 / 1024:.2f} MB..."
     )
 
     resultado = subprocess.run(
@@ -157,13 +168,13 @@ def comprimir_video(arquivo):
         apagar_arquivo(arquivo_temp)
 
         raise RuntimeError(
-            "Erro ao comprimir o vídeo."
+            "Erro no FFmpeg."
         )
 
     if not os.path.exists(arquivo_temp):
 
         raise RuntimeError(
-            "FFmpeg não criou o vídeo."
+            "FFmpeg não criou o arquivo."
         )
 
     tamanho_novo = os.path.getsize(
@@ -171,21 +182,21 @@ def comprimir_video(arquivo):
     )
 
     print(
-        f"📦 Após compressão: "
+        f"📦 Comprimido: "
         f"{tamanho_novo / 1024 / 1024:.2f} MB"
     )
 
+    # Segunda compressão se necessário
     if tamanho_novo > LIMITE_DISCORD:
 
         apagar_arquivo(arquivo_temp)
 
         bitrate_video = int(
-            bitrate_video * 0.55
+            bitrate_video * 0.50
         )
 
         comando[10] = str(bitrate_video)
         comando[12] = str(bitrate_video)
-        comando[-1] = arquivo_temp
 
         resultado = subprocess.run(
             comando,
@@ -195,6 +206,7 @@ def comprimir_video(arquivo):
         )
 
         if resultado.returncode != 0:
+
             apagar_arquivo(arquivo_temp)
 
             raise RuntimeError(
@@ -215,7 +227,7 @@ def comprimir_video(arquivo):
         apagar_arquivo(arquivo_temp)
 
         raise RuntimeError(
-            "O vídeo continua maior que 24 MB."
+            "Vídeo não conseguiu ficar abaixo de 24 MB."
         )
 
     apagar_arquivo(arquivo)
@@ -228,14 +240,20 @@ def comprimir_video(arquivo):
     return arquivo
 
 
+# =========================================================
+# TIKTOK
+# =========================================================
+
 def baixar_audio_tiktok(link):
 
     opcoes = {
         "format": "bestaudio/best",
+
         "outtmpl": os.path.join(
             PASTA_AUDIOS,
             "%(id)s.%(ext)s"
         ),
+
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -243,6 +261,7 @@ def baixar_audio_tiktok(link):
                 "preferredquality": "192"
             }
         ],
+
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -251,11 +270,16 @@ def baixar_audio_tiktok(link):
     }
 
     with yt_dlp.YoutubeDL(opcoes) as ydl:
+
         return ydl.extract_info(
             link,
             download=True
         )
 
+
+# =========================================================
+# /EXTRAIR
+# =========================================================
 
 @tree.command(
     name="extrair",
@@ -272,7 +296,7 @@ async def extrair(
     if "tiktok.com" not in link.lower():
 
         await interaction.response.send_message(
-            "❌ Envie um link válido do TikTok.",
+            "❌ Link inválido do TikTok.",
             ephemeral=True
         )
 
@@ -285,7 +309,7 @@ async def extrair(
     try:
 
         await interaction.edit_original_response(
-            content="⏳ Extraindo o áudio..."
+            content="⏳ Extraindo áudio..."
         )
 
         info = await asyncio.to_thread(
@@ -320,7 +344,7 @@ async def extrair(
             return
 
         await interaction.edit_original_response(
-            content="📤 Enviando o áudio..."
+            content="📤 Enviando áudio..."
         )
 
         await interaction.followup.send(
@@ -347,12 +371,18 @@ async def extrair(
         apagar_arquivo(arquivo)
 
         try:
+
             await interaction.edit_original_response(
                 content="❌ Não consegui extrair esse TikTok."
             )
+
         except Exception:
             pass
 
+
+# =========================================================
+# BAIXAR MEDAL
+# =========================================================
 
 def baixar_medal(link, qualidade):
 
@@ -364,14 +394,18 @@ def baixar_medal(link, qualidade):
             "+bestaudio/"
             f"best[height<={qualidade}]/best"
         ),
+
         "outtmpl": os.path.join(
             PASTA_VIDEOS,
             "%(id)s.%(ext)s"
         ),
+
         "merge_output_format": "mp4",
+
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+
         "retries": 3,
         "fragment_retries": 3
     }
@@ -384,8 +418,9 @@ def baixar_medal(link, qualidade):
         )
 
         if not info:
+
             raise RuntimeError(
-                "O Medal não retornou informações."
+                "Medal não retornou informações."
             )
 
         arquivo_base = os.path.join(
@@ -431,6 +466,10 @@ def baixar_medal(link, qualidade):
     return arquivo_saida, info
 
 
+# =========================================================
+# /MEDAL
+# =========================================================
+
 @tree.command(
     name="medal",
     description="Baixa um clipe do Medal"
@@ -446,7 +485,7 @@ async def medal(
     if "medal.tv" not in link.lower():
 
         await interaction.response.send_message(
-            "❌ Envie um link válido do Medal.",
+            "❌ Link inválido do Medal.",
             ephemeral=True
         )
 
@@ -459,12 +498,12 @@ async def medal(
 
     try:
 
+        # Tenta as qualidades
         for qualidade in [1080, 720, 480]:
 
             await interaction.edit_original_response(
                 content=(
-                    f"🎬 Baixando o vídeo em "
-                    f"{qualidade}p..."
+                    f"🎬 Baixando em {qualidade}p..."
                 )
             )
 
@@ -483,7 +522,7 @@ async def medal(
                     )
 
                     print(
-                        f"📦 {qualidade}p: "
+                        f"📦 {qualidade}p = "
                         f"{tamanho / 1024 / 1024:.2f} MB"
                     )
 
@@ -496,7 +535,7 @@ async def medal(
             except Exception as erro:
 
                 print(
-                    f"⚠️ Erro em {qualidade}p: "
+                    f"⚠️ Erro {qualidade}p: "
                     f"{type(erro).__name__}: {erro}"
                 )
 
@@ -513,6 +552,7 @@ async def medal(
             arquivo
         )
 
+        # Compressão
         if tamanho > LIMITE_DISCORD:
 
             await interaction.edit_original_response(
@@ -532,18 +572,19 @@ async def medal(
         )
 
         print(
-            f"📦 Tamanho final: "
+            f"📦 TAMANHO FINAL: "
             f"{tamanho / 1024 / 1024:.2f} MB"
         )
 
         if tamanho > LIMITE_DISCORD:
 
             raise RuntimeError(
-                "O vídeo continua maior que 24 MB."
+                "O vídeo ainda está maior que 24 MB."
             )
 
+        # Envio
         await interaction.edit_original_response(
-            content="📤 Enviando o vídeo para o Discord..."
+            content="📤 Enviando vídeo para o Discord..."
         )
 
         try:
@@ -565,7 +606,7 @@ async def medal(
             if getattr(erro, "status", None) == 413:
 
                 raise RuntimeError(
-                    "O Discord recusou o arquivo por tamanho."
+                    "Discord recusou o vídeo por tamanho."
                 )
 
             raise
@@ -577,7 +618,7 @@ async def medal(
             content="✅ Clipe baixado e enviado com sucesso!"
         )
 
-        print("✅ MEDAL CONCLUÍDO.")
+        print("✅ MEDAL FINALIZADO.")
 
     except Exception as erro:
 
@@ -601,6 +642,10 @@ async def medal(
             pass
 
 
+# =========================================================
+# BOT ONLINE
+# =========================================================
+
 @bot.event
 async def on_ready():
 
@@ -623,14 +668,20 @@ async def on_ready():
         )
 
 
+# =========================================================
+# INICIAR
+# =========================================================
+
 if not TOKEN:
 
     print(
-        "❌ ERRO: DISCORD_TOKEN não encontrado."
+        "❌ DISCORD_TOKEN não encontrado."
     )
 
 else:
 
-    print("🚀 Iniciando BYD Extrator...")
+    print(
+        "🚀 Iniciando BYD Extrator..."
+    )
 
     bot.run(TOKEN)
