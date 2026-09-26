@@ -1,4 +1,3 @@
-```python
 import discord
 from discord import app_commands
 import yt_dlp
