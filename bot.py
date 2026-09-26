@@ -14,13 +14,13 @@ PASTA = r"C:\BYD Extrator\audios"
 os.makedirs(PASTA, exist_ok=True)
 
 
-@tree.command(name="extrair", description="Extrai o áudio de um TikTok")
-@app_commands.describe(link="Link do TikTok")
+@tree.command(name="extrair", description="Extrai áudio do TikTok ou SoundCloud")
+@app_commands.describe(link="Link do TikTok ou SoundCloud")
 async def extrair(interaction: discord.Interaction, link: str):
 
-    if "tiktok.com" not in link:
+    if not ("tiktok.com" in link or "soundcloud.com" in link or "on.soundcloud.com" in link):
         await interaction.response.send_message(
-            "❌ Envie um link válido do TikTok.",
+            "❌ Envie um link válido do TikTok ou SoundCloud.",
             ephemeral=True
         )
         return
@@ -48,7 +48,7 @@ async def extrair(interaction: discord.Interaction, link: str):
             raise FileNotFoundError("MP3 não foi encontrado.")
 
         await interaction.channel.send(
-            content=f"🎵 **Áudio extraído:** {info.get('title', 'TikTok')}",
+            content=f"🎵 **Áudio extraído:** {info.get('title', 'Áudio')}",
             file=discord.File(arquivo)
         )
 
@@ -59,7 +59,7 @@ async def extrair(interaction: discord.Interaction, link: str):
     except Exception as erro:
         print(erro)
         await interaction.edit_original_response(
-            content="❌ Não consegui extrair o áudio desse TikTok."
+            content="❌ Não consegui extrair o áudio desse link."
         )
 
 
