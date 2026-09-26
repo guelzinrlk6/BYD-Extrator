@@ -1,7 +1,9 @@
+```python
 import discord
 from discord import app_commands
 import yt_dlp
 import os
+import asyncio
 
 # =========================================================
 # CONFIGURAÇÃO
@@ -32,7 +34,10 @@ LIMITE_DISCORD = 25 * 1024 * 1024
     description="Extrai o áudio de um TikTok"
 )
 @app_commands.describe(link="Link do TikTok")
-async def extrair(interaction: discord.Interaction, link: str):
+async def extrair(
+    interaction: discord.Interaction,
+    link: str
+):
 
     if "tiktok.com" not in link:
         await interaction.response.send_message(
@@ -41,11 +46,15 @@ async def extrair(interaction: discord.Interaction, link: str):
         )
         return
 
-    await interaction.response.send_message(
-        "⏳ Extraindo o áudio..."
-    )
+    # Responde imediatamente ao Discord
+    await interaction.response.defer()
+
+    arquivo = None
 
     try:
+
+        print("🎵 Iniciando extração do TikTok...")
+
         opcoes = {
             "format": "bestaudio/best",
             "outtmpl": os.path.join(
@@ -58,13 +67,16 @@ async def extrair(interaction: discord.Interaction, link: str):
                 "preferredquality": "192",
             }],
             "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
         }
 
-        with yt_dlp.YoutubeDL(opcoes) as ydl:
-            info = ydl.extract_info(
-                link,
-                download=True
-            )
+        # yt-dlp roda em outra thread para não bloquear o bot
+        info = await asyncio.to_thread(
+            baixar_audio_tiktok,
+            link,
+            opcoes
+        )
 
         arquivo = os.path.join(
             PASTA_AUDIOS,
@@ -78,15 +90,27 @@ async def extrair(interaction: discord.Interaction, link: str):
 
         tamanho = os.path.getsize(arquivo)
 
+        print(
+            f"📦 Tamanho do áudio: "
+            f"{tamanho / 1024 / 1024:.2f} MB"
+        )
+
         if tamanho > LIMITE_DISCORD:
+
             os.remove(arquivo)
+            arquivo = None
 
             await interaction.edit_original_response(
                 content="❌ O áudio ficou maior que 25 MB."
             )
+
             return
 
-        await interaction.channel.send(
+        await interaction.edit_original_response(
+            content="📤 Enviando o áudio para o Discord..."
+        )
+
+        await interaction.followup.send(
             content=(
                 f"🎵 **Áudio extraído:** "
                 f"{info.get('title', 'TikTok')}"
@@ -95,18 +119,36 @@ async def extrair(interaction: discord.Interaction, link: str):
         )
 
         os.remove(arquivo)
+        arquivo = None
 
         await interaction.edit_original_response(
             content="✅ Áudio extraído com sucesso!"
         )
 
     except Exception as erro:
+
         print(f"ERRO EXTRAIR: {erro}")
+
+        if arquivo and os.path.exists(arquivo):
+            try:
+                os.remove(arquivo)
+            except Exception:
+                pass
 
         await interaction.edit_original_response(
             content=(
-                "❌ Não consegui extrair o áudio desse TikTok."
+                "❌ Não consegui extrair o áudio desse TikTok. "
+                "Veja o erro no CMD."
             )
+        )
+
+
+def baixar_audio_tiktok(link, opcoes):
+
+    with yt_dlp.YoutubeDL(opcoes) as ydl:
+        return ydl.extract_info(
+            link,
+            download=True
         )
 
 
@@ -190,9 +232,12 @@ async def medal(
         )
         return
 
-    await interaction.response.send_message(
-        "⏳ Baixando o clipe em 1080p..."
-    )
+    # =====================================================
+    # IMPORTANTE:
+    # Responde imediatamente ao Discord.
+    # =====================================================
+
+    await interaction.response.defer()
 
     arquivo = None
 
@@ -202,9 +247,14 @@ async def medal(
         # 1ª TENTATIVA — 1080p
         # =================================================
 
+        await interaction.edit_original_response(
+            content="⏳ Baixando o clipe em 1080p..."
+        )
+
         print("🎬 Tentando baixar em 1080p...")
 
-        arquivo, info = baixar_medal(
+        arquivo, info = await asyncio.to_thread(
+            baixar_medal,
             link,
             1080
         )
@@ -212,7 +262,7 @@ async def medal(
         tamanho = os.path.getsize(arquivo)
 
         print(
-            f"📦 Tamanho do vídeo: "
+            f"📦 Tamanho do vídeo em 1080p: "
             f"{tamanho / 1024 / 1024:.2f} MB"
         )
 
@@ -222,9 +272,7 @@ async def medal(
 
         if tamanho > LIMITE_DISCORD:
 
-            print(
-                "⚠️ Vídeo maior que 25 MB."
-            )
+            print("⚠️ Vídeo maior que 25 MB.")
 
             os.remove(arquivo)
             arquivo = None
@@ -242,7 +290,8 @@ async def medal(
 
             print("🎬 Tentando baixar em 720p...")
 
-            arquivo, info = baixar_medal(
+            arquivo, info = await asyncio.to_thread(
+                baixar_medal,
                 link,
                 720
             )
@@ -250,7 +299,7 @@ async def medal(
             tamanho = os.path.getsize(arquivo)
 
             print(
-                f"📦 Tamanho em 720p: "
+                f"📦 Tamanho do vídeo em 720p: "
                 f"{tamanho / 1024 / 1024:.2f} MB"
             )
 
@@ -276,7 +325,8 @@ async def medal(
 
             print("🎬 Tentando baixar em 480p...")
 
-            arquivo, info = baixar_medal(
+            arquivo, info = await asyncio.to_thread(
+                baixar_medal,
                 link,
                 480
             )
@@ -284,7 +334,7 @@ async def medal(
             tamanho = os.path.getsize(arquivo)
 
             print(
-                f"📦 Tamanho em 480p: "
+                f"📦 Tamanho do vídeo em 480p: "
                 f"{tamanho / 1024 / 1024:.2f} MB"
             )
 
@@ -314,7 +364,7 @@ async def medal(
             content="📤 Enviando o vídeo para o Discord..."
         )
 
-        await interaction.channel.send(
+        await interaction.followup.send(
             content=(
                 f"🎬 **Clipe do Medal:** "
                 f"{info.get('title', 'Vídeo')}"
@@ -323,7 +373,7 @@ async def medal(
         )
 
         # =================================================
-        # APAGA O ARQUIVO DO PC
+        # APAGA O ARQUIVO
         # =================================================
 
         os.remove(arquivo)
@@ -341,15 +391,18 @@ async def medal(
         if arquivo and os.path.exists(arquivo):
             try:
                 os.remove(arquivo)
-            except:
+            except Exception:
                 pass
 
-        await interaction.edit_original_response(
-            content=(
-                "❌ Não consegui baixar esse clipe do Medal. "
-                "Veja o erro no CMD."
+        try:
+            await interaction.edit_original_response(
+                content=(
+                    "❌ Não consegui baixar esse clipe do Medal. "
+                    "Veja o erro no CMD."
+                )
             )
-        )
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -370,4 +423,10 @@ async def on_ready():
 # INICIAR BOT
 # =========================================================
 
+if not TOKEN:
+    raise RuntimeError(
+        "A variável DISCORD_TOKEN não foi encontrada."
+    )
+
 bot.run(TOKEN)
+```
