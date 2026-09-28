@@ -1,6 +1,3 @@
-import discord
-from discord import app_commands
-import yt_dlp
 import os
 import asyncio
 import glob
@@ -8,448 +5,429 @@ import shutil
 import subprocess
 import re
 
+import discord
+from discord import app_commands
+import yt_dlp
+
+
+# =========================================================
+# CONFIGURAÇÃO
+# =========================================================
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 PASTA_AUDIOS = "audios"
 PASTA_VIDEOS = "videos"
 
+LIMITE_DISCORD = 23 * 1024 * 1024  # 23 MB
+
 os.makedirs(PASTA_AUDIOS, exist_ok=True)
 os.makedirs(PASTA_VIDEOS, exist_ok=True)
-
-# Margem de segurança para o Discord
-LIMITE_DISCORD = 23 * 1024 * 1024
 
 intents = discord.Intents.default()
 
 bot = discord.Client(intents=intents)
-
 tree = app_commands.CommandTree(bot)
 
 
 # =========================================================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES GERAIS
 # =========================================================
 
 def apagar_arquivo(arquivo):
-
     try:
-
         if arquivo and os.path.exists(arquivo):
             os.remove(arquivo)
-
-    except Exception as erro:
-
-        print(
-            f"⚠️ AVISO AO APAGAR: {erro}"
-        )
-
-
-def tamanho_mb(arquivo):
-
-    if not arquivo:
-        return 0
-
-    if not os.path.exists(arquivo):
-        return 0
-
-    return (
-        os.path.getsize(arquivo)
-        / 1024
-        / 1024
-    )
+    except Exception as e:
+        print(f"AVISO AO APAGAR: {e}")
 
 
 def encontrar_ffmpeg():
-
     ffmpeg = shutil.which("ffmpeg")
 
     if ffmpeg:
         return ffmpeg
 
     try:
-
         import imageio_ffmpeg
-
         return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
-    except Exception as erro:
 
-        print(
-            f"⚠️ FFmpeg não encontrado: {erro}"
+def tamanho_arquivo(arquivo):
+    try:
+        return os.path.getsize(arquivo)
+    except Exception:
+        return 0
+
+
+# =========================================================
+# TIKTOK
+# =========================================================
+
+def baixar_audio_tiktok(link):
+    opcoes = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(
+            PASTA_AUDIOS,
+            "%(id)s.%(ext)s"
+        ),
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192"
+            }
+        ],
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 3,
+        "fragment_retries": 3
+    }
+
+    with yt_dlp.YoutubeDL(opcoes) as ydl:
+        return ydl.extract_info(link, download=True)
+
+
+# =========================================================
+# SOUNDCLOUD
+# =========================================================
+
+def baixar_audio_soundcloud(link):
+    opcoes = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(
+            PASTA_AUDIOS,
+            "soundcloud_%(id)s.%(ext)s"
+        ),
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192"
+            }
+        ],
+        "noplaylist": False,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 3,
+        "fragment_retries": 3
+    }
+
+    with yt_dlp.YoutubeDL(opcoes) as ydl:
+        return ydl.extract_info(link, download=True)
+
+
+# =========================================================
+# FFPROBE / DURAÇÃO
+# =========================================================
+
+def descobrir_duracao(ffmpeg, arquivo):
+    try:
+        ffprobe = ffmpeg.replace("ffmpeg", "ffprobe")
+
+        if not os.path.exists(ffprobe):
+            ffprobe = shutil.which("ffprobe")
+
+        if not ffprobe:
+            return None
+
+        resultado = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                arquivo
+            ],
+            capture_output=True,
+            text=True
         )
 
-        return None
+        valor = resultado.stdout.strip()
+
+        if valor:
+            return float(valor)
+
+    except Exception as e:
+        print(f"AVISO DURAÇÃO: {e}")
+
+    return None
 
 
 # =========================================================
 # COMPRESSÃO DE VÍDEO
 # =========================================================
 
-def descobrir_duracao(
-    ffmpeg,
-    arquivo
-):
-
-    try:
-
-        resultado = subprocess.run(
-            [
-                ffmpeg,
-                "-i",
-                arquivo
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        encontrado = re.search(
-            r"Duration:\s*(\d+):(\d+):([\d.]+)",
-            resultado.stderr
-        )
-
-        if encontrado:
-
-            horas = int(
-                encontrado.group(1)
-            )
-
-            minutos = int(
-                encontrado.group(2)
-            )
-
-            segundos = float(
-                encontrado.group(3)
-            )
-
-            duracao = (
-                horas * 3600
-                + minutos * 60
-                + segundos
-            )
-
-            if duracao > 0:
-                return duracao
-
-    except Exception as erro:
-
-        print(
-            f"⚠️ Erro ao descobrir duração: {erro}"
-        )
-
-    return 60
-
-
 def comprimir_video(arquivo):
+    if not os.path.exists(arquivo):
+        return None
+
+    tamanho = tamanho_arquivo(arquivo)
+
+    if tamanho <= LIMITE_DISCORD:
+        return arquivo
 
     ffmpeg = encontrar_ffmpeg()
 
     if not ffmpeg:
-
         raise RuntimeError(
-            "FFmpeg não encontrado."
+            "FFmpeg não encontrado para comprimir o vídeo."
         )
 
-    if not arquivo or not os.path.exists(arquivo):
+    duracao = descobrir_duracao(ffmpeg, arquivo)
 
-        raise FileNotFoundError(
-            "Vídeo não encontrado."
-        )
-
-    tamanho_original = os.path.getsize(
-        arquivo
-    )
-
-    if tamanho_original <= LIMITE_DISCORD:
-
-        return arquivo
-
-    duracao = descobrir_duracao(
-        ffmpeg,
-        arquivo
-    )
-
-    print(
-        f"🗜️ Comprimindo vídeo de "
-        f"{tamanho_mb(arquivo):.2f} MB"
-    )
+    if not duracao or duracao <= 0:
+        duracao = 60
 
     arquivo_temp = os.path.join(
         PASTA_VIDEOS,
         "temp_comprimido.mp4"
     )
 
-    apagar_arquivo(
-        arquivo_temp
-    )
-
+    # Tentativas progressivamente mais agressivas
     configuracoes = [
-        (854, 1.00),
-        (720, 0.80),
-        (640, 0.65),
-        (540, 0.50),
-        (480, 0.40)
+        (854, 18_000_000),
+        (720, 17_000_000),
+        (640, 16_000_000),
+        (540, 15_000_000),
+        (480, 14_000_000),
     ]
 
-    for tentativa, (
-        escala,
-        fator
-    ) in enumerate(
-        configuracoes,
-        start=1
-    ):
+    for largura, tamanho_alvo in configuracoes:
 
-        alvo_bytes = (
-            18 * 1024 * 1024
-        )
+        try:
+            if os.path.exists(arquivo_temp):
+                os.remove(arquivo_temp)
 
-        bitrate_total = int(
-            (alvo_bytes * 8)
-            / duracao
-        )
+            # Reserva para áudio
+            audio_kbps = 64
 
-        bitrate_audio = 64000
+            audio_bits = audio_kbps * 1000
 
-        bitrate_video = (
-            bitrate_total
-            - bitrate_audio
-        )
-
-        bitrate_video = int(
-            bitrate_video * fator
-        )
-
-        bitrate_video = max(
-            bitrate_video,
-            100000
-        )
-
-        print(
-            f"🗜️ Tentativa {tentativa}/5 | "
-            f"{escala}p | "
-            f"{bitrate_video} bps"
-        )
-
-        comando = [
-
-            ffmpeg,
-
-            "-y",
-
-            "-i",
-            arquivo,
-
-            "-vf",
-            f"scale='min({escala},iw)':-2",
-
-            "-c:v",
-            "libx264",
-
-            "-preset",
-            "veryfast",
-
-            "-b:v",
-            str(bitrate_video),
-
-            "-maxrate",
-            str(bitrate_video),
-
-            "-bufsize",
-            str(bitrate_video * 2),
-
-            "-c:a",
-            "aac",
-
-            "-b:a",
-            "64000",
-
-            "-movflags",
-            "+faststart",
-
-            arquivo_temp
-        ]
-
-        resultado = subprocess.run(
-            comando,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        if resultado.returncode != 0:
-
-            print(
-                resultado.stderr[-3000:]
+            video_bits_total = (
+                tamanho_alvo * 8
             )
 
-            apagar_arquivo(
+            video_bits = (
+                video_bits_total
+                - (audio_bits * duracao)
+            )
+
+            video_kbps = int(
+                video_bits / duracao / 1000
+            )
+
+            if video_kbps < 150:
+                video_kbps = 150
+
+            comando = [
+                ffmpeg,
+                "-y",
+                "-i",
+                arquivo,
+
+                "-vf",
+                f"scale='min({largura},iw)':-2",
+
+                "-c:v",
+                "libx264",
+
+                "-preset",
+                "veryfast",
+
+                "-b:v",
+                f"{video_kbps}k",
+
+                "-maxrate",
+                f"{int(video_kbps * 1.15)}k",
+
+                "-bufsize",
+                f"{int(video_kbps * 2)}k",
+
+                "-pix_fmt",
+                "yuv420p",
+
+                "-c:a",
+                "aac",
+
+                "-b:a",
+                "64k",
+
+                "-movflags",
+                "+faststart",
+
+                arquivo_temp
+            ]
+
+            print(
+                f"🗜️ Compressão: {largura}p "
+                f"| {video_kbps} kbps"
+            )
+
+            resultado = subprocess.run(
+                comando,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            if resultado.returncode != 0:
+                print(
+                    "ERRO FFMPEG:",
+                    resultado.stderr[-2000:]
+                )
+                continue
+
+            if not os.path.exists(arquivo_temp):
+                continue
+
+            novo_tamanho = tamanho_arquivo(
                 arquivo_temp
             )
 
-            continue
-
-        if not os.path.exists(
-            arquivo_temp
-        ):
-
-            continue
-
-        tamanho_novo = os.path.getsize(
-            arquivo_temp
-        )
-
-        print(
-            f"📦 Resultado: "
-            f"{tamanho_novo / 1024 / 1024:.2f} MB"
-        )
-
-        if tamanho_novo <= LIMITE_DISCORD:
-
-            apagar_arquivo(
-                arquivo
-            )
-
-            os.replace(
-                arquivo_temp,
-                arquivo
-            )
-
             print(
-                f"✅ Vídeo final: "
-                f"{tamanho_mb(arquivo):.2f} MB"
+                f"📦 Tamanho comprimido: "
+                f"{novo_tamanho / 1024 / 1024:.2f} MB"
             )
 
-            return arquivo
+            if novo_tamanho <= LIMITE_DISCORD:
 
-        apagar_arquivo(
-            arquivo_temp
-        )
+                apagar_arquivo(arquivo)
+
+                os.replace(
+                    arquivo_temp,
+                    arquivo
+                )
+
+                return arquivo
+
+        except Exception as e:
+            print(
+                f"ERRO NA COMPRESSÃO: {type(e).__name__}: {e}"
+            )
+
+    apagar_arquivo(arquivo_temp)
 
     raise RuntimeError(
-        "Não foi possível comprimir o vídeo."
+        "Vídeo não conseguiu ficar abaixo de 23 MB."
     )
 
 
 # =========================================================
-# ÁUDIO DO TIKTOK
+# MEDAL
 # =========================================================
 
-def baixar_audio_tiktok(
-    link
-):
-
-    opcoes = {
-
-        "format":
-            "bestaudio/best",
-
-        "outtmpl":
-            os.path.join(
-                PASTA_AUDIOS,
-                "%(id)s.%(ext)s"
-            ),
-
-        "postprocessors": [
-
-            {
-                "key":
-                    "FFmpegExtractAudio",
-
-                "preferredcodec":
-                    "mp3",
-
-                "preferredquality":
-                    "192"
-            }
-        ],
-
-        "noplaylist":
-            True,
-
-        "quiet":
-            True,
-
-        "no_warnings":
-            True,
-
-        "retries":
-            3,
-
-        "fragment_retries":
-            3
+def baixar_medal(link):
+    opcoes_base = {
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 3,
+        "fragment_retries": 3,
+        "merge_output_format": "mp4",
+        "outtmpl": os.path.join(
+            PASTA_VIDEOS,
+            "medal_%(id)s.%(ext)s"
+        )
     }
 
-    with yt_dlp.YoutubeDL(
-        opcoes
-    ) as ydl:
+    formatos = [
+        "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+        "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "bestvideo[height<=480]+bestaudio/best[height<=480]"
+    ]
 
-        return ydl.extract_info(
-            link,
-            download=True
-        )
+    ultimo_erro = None
+
+    for formato in formatos:
+
+        try:
+            opcoes = opcoes_base.copy()
+            opcoes["format"] = formato
+
+            print(
+                f"🎬 Tentando Medal: {formato}"
+            )
+
+            with yt_dlp.YoutubeDL(opcoes) as ydl:
+                info = ydl.extract_info(
+                    link,
+                    download=True
+                )
+
+            if not info:
+                continue
+
+            video_id = info.get("id")
+
+            if video_id:
+                candidatos = glob.glob(
+                    os.path.join(
+                        PASTA_VIDEOS,
+                        f"medal_{video_id}.*"
+                    )
+                )
+
+                candidatos = [
+                    x for x in candidatos
+                    if os.path.isfile(x)
+                    and not x.endswith(".part")
+                ]
+
+                if candidatos:
+                    candidatos.sort(
+                        key=os.path.getmtime,
+                        reverse=True
+                    )
+
+                    return candidatos[0]
+
+            arquivos = glob.glob(
+                os.path.join(
+                    PASTA_VIDEOS,
+                    "*"
+                )
+            )
+
+            arquivos = [
+                x for x in arquivos
+                if os.path.isfile(x)
+                and not x.endswith(".part")
+                and not x.endswith(".ytdl")
+            ]
+
+            if arquivos:
+                arquivos.sort(
+                    key=os.path.getmtime,
+                    reverse=True
+                )
+
+                return arquivos[0]
+
+        except Exception as e:
+            ultimo_erro = e
+
+            print(
+                f"ERRO MEDAL FORMATO: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    if ultimo_erro:
+        raise ultimo_erro
+
+    raise RuntimeError(
+        "Não foi possível baixar o clipe do Medal."
+    )
 
 
 # =========================================================
-# ÁUDIO DO SOUNDCLOUD
-# =========================================================
-
-def baixar_audio_soundcloud(
-    link
-):
-
-    opcoes = {
-
-        "format":
-            "bestaudio/best",
-
-        "outtmpl":
-            os.path.join(
-                PASTA_AUDIOS,
-                "soundcloud_%(id)s.%(ext)s"
-            ),
-
-        "postprocessors": [
-
-            {
-                "key":
-                    "FFmpegExtractAudio",
-
-                "preferredcodec":
-                    "mp3",
-
-                "preferredquality":
-                    "192"
-            }
-        ],
-
-        "noplaylist":
-            False,
-
-        "quiet":
-            True,
-
-        "no_warnings":
-            True,
-
-        "retries":
-            3,
-
-        "fragment_retries":
-            3
-    }
-
-    with yt_dlp.YoutubeDL(
-        opcoes
-    ) as ydl:
-
-        return ydl.extract_info(
-            link,
-            download=True
-        )
-
-
-# =========================================================
-# /EXTRAIR - TIKTOK
+# COMANDO /EXTRAIR
 # =========================================================
 
 @tree.command(
@@ -475,8 +453,6 @@ async def extrair(
 
     await interaction.response.defer()
 
-    arquivo = None
-
     try:
 
         await interaction.edit_original_response(
@@ -488,101 +464,90 @@ async def extrair(
             link
         )
 
+        video_id = info.get("id")
+
         arquivo = os.path.join(
             PASTA_AUDIOS,
-            f"{info['id']}.mp3"
+            f"{video_id}.mp3"
         )
 
-        if not os.path.exists(
-            arquivo
-        ):
+        if not os.path.exists(arquivo):
 
-            raise FileNotFoundError(
-                "MP3 não encontrado."
+            arquivos = glob.glob(
+                os.path.join(
+                    PASTA_AUDIOS,
+                    "*.mp3"
+                )
             )
 
-        if os.path.getsize(
-            arquivo
-        ) > LIMITE_DISCORD:
+            if arquivos:
+                arquivos.sort(
+                    key=os.path.getmtime,
+                    reverse=True
+                )
 
-            apagar_arquivo(
-                arquivo
-            )
+                arquivo = arquivos[0]
 
-            arquivo = None
-
+        if not os.path.exists(arquivo):
             raise RuntimeError(
-                "O áudio ficou maior que 23 MB."
+                "O MP3 não foi encontrado."
             )
+
+        if tamanho_arquivo(arquivo) > LIMITE_DISCORD:
+            apagar_arquivo(arquivo)
+
+            await interaction.edit_original_response(
+                content="❌ O áudio ficou maior que o limite do Discord."
+            )
+
+            return
 
         await interaction.edit_original_response(
             content="📤 Enviando áudio..."
         )
 
         await interaction.followup.send(
-            content=(
-                f"🎵 **Áudio extraído:** "
-                f"{info.get('title', 'TikTok')}"
-            ),
             file=discord.File(
-                arquivo
+                arquivo,
+                filename="audio.mp3"
             )
         )
 
-        apagar_arquivo(
-            arquivo
-        )
-
-        arquivo = None
+        apagar_arquivo(arquivo)
 
         await interaction.edit_original_response(
             content="✅ Áudio extraído com sucesso!"
         )
 
-    except Exception as erro:
+    except Exception as e:
 
         print(
-            f"❌ ERRO TIKTOK: "
-            f"{type(erro).__name__}: {erro}"
+            f"ERRO TIKTOK: "
+            f"{type(e).__name__}: {e}"
         )
 
-        apagar_arquivo(
-            arquivo
+        await interaction.edit_original_response(
+            content=f"❌ ERRO TIKTOK: {type(e).__name__}: {e}"
         )
-
-        try:
-
-            await interaction.edit_original_response(
-                content=(
-                    "❌ Não consegui extrair o áudio.\n"
-                    f"Motivo: {erro}"
-                )
-            )
-
-        except Exception:
-            pass
 
 
 # =========================================================
-# /SOUNDCLOUD
+# COMANDO /SOUNDCLOUD
 # =========================================================
 
 @tree.command(
     name="soundcloud",
-    description="Extrai o áudio de um link do SoundCloud"
+    description="Extrai áudio do SoundCloud"
 )
 @app_commands.describe(
-    link="Link da música ou áudio do SoundCloud"
+    link="Link da música do SoundCloud"
 )
 async def soundcloud(
     interaction: discord.Interaction,
     link: str
 ):
 
-    if (
-        "soundcloud.com" not in
-        link.lower()
-    ):
+    if "soundcloud.com" not in link.lower():
 
         await interaction.response.send_message(
             "❌ Link inválido do SoundCloud.",
@@ -592,17 +557,6 @@ async def soundcloud(
         return
 
     await interaction.response.defer()
-
-    arquivos_antes = set(
-        glob.glob(
-            os.path.join(
-                PASTA_AUDIOS,
-                "*"
-            )
-        )
-    )
-
-    arquivo = None
 
     try:
 
@@ -615,276 +569,114 @@ async def soundcloud(
             link
         )
 
-        # Primeiro procura pelo ID.
-        arquivo_id = os.path.join(
-            PASTA_AUDIOS,
-            f"soundcloud_{info['id']}.mp3"
-        )
-
-        if os.path.exists(
-            arquivo_id
-        ):
-
-            arquivo = arquivo_id
-
-        else:
-
-            # Procura novos MP3 criados pelo download.
-            arquivos_depois = set(
-                glob.glob(
-                    os.path.join(
-                        PASTA_AUDIOS,
-                        "*"
-                    )
-                )
-            )
-
-            novos = (
-                arquivos_depois
-                - arquivos_antes
-            )
-
-            mp3s = [
-                x for x in novos
-                if x.lower().endswith(
-                    ".mp3"
-                )
+        # Playlist pode retornar entries
+        if info.get("entries"):
+            entradas = [
+                entrada
+                for entrada in info["entries"]
+                if entrada
             ]
 
-            if mp3s:
+            if entradas:
+                info = entradas[0]
 
-                mp3s.sort(
-                    key=os.path.getmtime,
-                    reverse=True
-                )
-
-                arquivo = mp3s[0]
-
-        if not arquivo:
-
-            # Última tentativa:
-            # procura MP3 mais recente.
-            mp3s = glob.glob(
-                os.path.join(
-                    PASTA_AUDIOS,
-                    "*.mp3"
-                )
-            )
-
-            if mp3s:
-
-                mp3s.sort(
-                    key=os.path.getmtime,
-                    reverse=True
-                )
-
-                arquivo = mp3s[0]
-
-        if not arquivo or not os.path.exists(
-            arquivo
-        ):
-
-            raise FileNotFoundError(
-                "Áudio do SoundCloud não foi encontrado."
-            )
-
-        tamanho = os.path.getsize(
-            arquivo
-        )
-
-        print(
-            f"🎵 SoundCloud: "
-            f"{tamanho / 1024 / 1024:.2f} MB"
-        )
-
-        if tamanho > LIMITE_DISCORD:
-
-            apagar_arquivo(
-                arquivo
-            )
-
-            arquivo = None
-
-            raise RuntimeError(
-                "O áudio ficou maior que 23 MB."
-            )
-
-        await interaction.edit_original_response(
-            content="📤 Enviando áudio..."
-        )
-
-        titulo = info.get(
-            "title",
-            "SoundCloud"
-        )
-
-        await interaction.followup.send(
-            content=(
-                f"🎵 **SoundCloud:** {titulo}"
-            ),
-            file=discord.File(
-                arquivo,
-                filename="soundcloud.mp3"
-            )
-        )
-
-        apagar_arquivo(
-            arquivo
-        )
+        audio_id = info.get("id")
 
         arquivo = None
 
-        await interaction.edit_original_response(
-            content=(
-                "✅ Áudio do SoundCloud "
-                "extraído com sucesso!"
+        if audio_id:
+            possivel = os.path.join(
+                PASTA_AUDIOS,
+                f"soundcloud_{audio_id}.mp3"
             )
-        )
 
-    except Exception as erro:
+            if os.path.exists(possivel):
+                arquivo = possivel
 
-        print(
-            f"❌ ERRO SOUNDCLOUD: "
-            f"{type(erro).__name__}: {erro}"
-        )
+        # Procura o MP3 mais recente como fallback
+        if not arquivo:
 
-        apagar_arquivo(
-            arquivo
+            arquivos = glob.glob(
+                os.path.join(
+                    PASTA_AUDIOS,
+                    "soundcloud_*.mp3"
+                )
+            )
+
+            arquivos = [
+                x for x in arquivos
+                if os.path.isfile(x)
+            ]
+
+            if arquivos:
+                arquivos.sort(
+                    key=os.path.getmtime,
+                    reverse=True
+                )
+
+                arquivo = arquivos[0]
+
+        if not arquivo or not os.path.exists(arquivo):
+
+            raise RuntimeError(
+                "O MP3 do SoundCloud não foi encontrado."
+            )
+
+        if tamanho_arquivo(arquivo) > LIMITE_DISCORD:
+
+            apagar_arquivo(arquivo)
+
+            await interaction.edit_original_response(
+                content="❌ O áudio do SoundCloud ficou maior que o limite do Discord."
+            )
+
+            return
+
+        await interaction.edit_original_response(
+            content="📤 Enviando áudio do SoundCloud..."
         )
 
         try:
 
-            await interaction.edit_original_response(
-                content=(
-                    "❌ Não consegui extrair o SoundCloud.\n"
-                    f"Motivo: {erro}"
+            await interaction.followup.send(
+                file=discord.File(
+                    arquivo,
+                    filename="soundcloud.mp3"
                 )
             )
 
-        except Exception:
-            pass
+        except discord.HTTPException as e:
 
+            if getattr(e, "status", None) == 413:
 
-# =========================================================
-# BAIXAR MEDAL
-# =========================================================
-
-def baixar_medal(
-    link,
-    qualidade
-):
-
-    arquivo_saida = None
-
-    opcoes = {
-
-        "format": (
-            f"bestvideo[height<={qualidade}]"
-            "+bestaudio/"
-            f"best[height<={qualidade}]/best"
-        ),
-
-        "outtmpl":
-            os.path.join(
-                PASTA_VIDEOS,
-                "%(id)s.%(ext)s"
-            ),
-
-        "merge_output_format":
-            "mp4",
-
-        "noplaylist":
-            True,
-
-        "quiet":
-            True,
-
-        "no_warnings":
-            True,
-
-        "retries":
-            3,
-
-        "fragment_retries":
-            3
-    }
-
-    with yt_dlp.YoutubeDL(
-        opcoes
-    ) as ydl:
-
-        info = ydl.extract_info(
-            link,
-            download=True
-        )
-
-        if not info:
-
-            raise RuntimeError(
-                "Medal não retornou informações."
-            )
-
-        arquivo_base = os.path.join(
-            PASTA_VIDEOS,
-            str(info["id"])
-        )
-
-        for extensao in [
-            ".mp4",
-            ".webm",
-            ".mkv",
-            ".mov"
-        ]:
-
-            possivel = (
-                arquivo_base
-                + extensao
-            )
-
-            if os.path.exists(
-                possivel
-            ):
-
-                arquivo_saida = (
-                    possivel
+                await interaction.edit_original_response(
+                    content="❌ O Discord recusou o arquivo por tamanho."
                 )
 
-                break
+                return
 
-    if arquivo_saida is None:
+            raise
 
-        arquivos = glob.glob(
-            os.path.join(
-                PASTA_VIDEOS,
-                f"{info['id']}.*"
-            )
+        apagar_arquivo(arquivo)
+
+        await interaction.edit_original_response(
+            content="✅ Áudio do SoundCloud extraído com sucesso!"
         )
 
-        if arquivos:
+    except Exception as e:
 
-            arquivos.sort(
-                key=os.path.getsize,
-                reverse=True
-            )
-
-            arquivo_saida = (
-                arquivos[0]
-            )
-
-    if arquivo_saida is None:
-
-        raise FileNotFoundError(
-            "Vídeo não encontrado."
+        print(
+            f"ERRO SOUNDCLOUD: "
+            f"{type(e).__name__}: {e}"
         )
 
-    return (
-        arquivo_saida,
-        info
-    )
+        await interaction.edit_original_response(
+            content=f"❌ ERRO SOUNDCLOUD: {type(e).__name__}: {e}"
+        )
 
 
 # =========================================================
-# /MEDAL
+# COMANDO /MEDAL
 # =========================================================
 
 @tree.command(
@@ -911,107 +703,34 @@ async def medal(
     await interaction.response.defer()
 
     arquivo = None
-    info = None
 
     try:
 
-        for qualidade in [
-            1080,
-            720,
-            480
-        ]:
+        await interaction.edit_original_response(
+            content="⏳ Baixando o clipe do Medal..."
+        )
 
-            await interaction.edit_original_response(
-                content=(
-                    f"🎬 Baixando em {qualidade}p..."
-                )
-            )
+        arquivo = await asyncio.to_thread(
+            baixar_medal,
+            link
+        )
 
-            try:
-
-                arquivo_teste, info_teste = (
-                    await asyncio.to_thread(
-                        baixar_medal,
-                        link,
-                        qualidade
-                    )
-                )
-
-                if not arquivo_teste:
-
-                    continue
-
-                if not os.path.exists(
-                    arquivo_teste
-                ):
-
-                    continue
-
-                tamanho = os.path.getsize(
-                    arquivo_teste
-                )
-
-                print(
-                    f"📦 {qualidade}p: "
-                    f"{tamanho / 1024 / 1024:.2f} MB"
-                )
-
-                if tamanho <= LIMITE_DISCORD:
-
-                    arquivo = (
-                        arquivo_teste
-                    )
-
-                    info = (
-                        info_teste
-                    )
-
-                    break
-
-                # Se chegou em 480p,
-                # mantém para compressão.
-                if qualidade == 480:
-
-                    arquivo = (
-                        arquivo_teste
-                    )
-
-                    info = (
-                        info_teste
-                    )
-
-                    break
-
-                apagar_arquivo(
-                    arquivo_teste
-                )
-
-            except Exception as erro:
-
-                print(
-                    f"⚠️ ERRO {qualidade}p: "
-                    f"{type(erro).__name__}: {erro}"
-                )
-
-                continue
-
-        if not arquivo:
-
+        if not arquivo or not os.path.exists(arquivo):
             raise RuntimeError(
-                "Não foi possível baixar o vídeo."
+                "O vídeo não foi encontrado."
             )
 
-        tamanho = os.path.getsize(
-            arquivo
+        tamanho = tamanho_arquivo(arquivo)
+
+        print(
+            f"📦 TAMANHO INICIAL: "
+            f"{tamanho / 1024 / 1024:.2f} MB"
         )
 
         if tamanho > LIMITE_DISCORD:
 
             await interaction.edit_original_response(
-                content=(
-                    "🗜️ Vídeo grande. "
-                    "Comprimindo automaticamente..."
-                )
+                content="🗜️ O vídeo ficou grande. Comprimindo automaticamente..."
             )
 
             arquivo = await asyncio.to_thread(
@@ -1019,9 +738,7 @@ async def medal(
                 arquivo
             )
 
-        tamanho_final = os.path.getsize(
-            arquivo
-        )
+        tamanho_final = tamanho_arquivo(arquivo)
 
         print(
             f"📦 TAMANHO FINAL: "
@@ -1030,79 +747,67 @@ async def medal(
 
         if tamanho_final > LIMITE_DISCORD:
 
-            raise RuntimeError(
-                "Vídeo ainda está acima do limite."
+            apagar_arquivo(arquivo)
+
+            await interaction.edit_original_response(
+                content="❌ Não consegui deixar o vídeo abaixo de 23 MB."
             )
 
+            return
+
         await interaction.edit_original_response(
-            content=(
-                f"📤 Enviando vídeo "
-                f"({tamanho_final / 1024 / 1024:.2f} MB)..."
-            )
+            content="📤 Enviando vídeo..."
         )
 
         try:
 
             await interaction.followup.send(
-                content=(
-                    f"🎬 **Clipe do Medal:** "
-                    f"{info.get('title', 'Vídeo')}"
-                ),
                 file=discord.File(
                     arquivo,
                     filename="medal.mp4"
                 )
             )
 
-        except discord.HTTPException as erro:
+        except discord.HTTPException as e:
 
             print(
-                f"❌ ERRO DISCORD AO ENVIAR: "
-                f"{erro}"
+                f"ERRO DISCORD AO ENVIAR: "
+                f"{type(e).__name__}: {e}"
             )
 
-            raise RuntimeError(
-                "O Discord recusou o arquivo."
-            )
+            if getattr(e, "status", None) == 413:
 
-        apagar_arquivo(
-            arquivo
-        )
+                await interaction.edit_original_response(
+                    content="❌ ERRO DISCORD: O arquivo foi recusado por tamanho."
+                )
 
-        arquivo = None
+                return
+
+            raise
+
+        apagar_arquivo(arquivo)
 
         await interaction.edit_original_response(
-            content=(
-                "✅ Clipe baixado e enviado com sucesso!"
-            )
+            content="✅ Vídeo enviado com sucesso!"
         )
 
-    except Exception as erro:
+    except Exception as e:
 
         print(
-            f"❌ ERRO MEDAL: "
-            f"{type(erro).__name__}: {erro}"
+            f"ERRO MEDAL: "
+            f"{type(e).__name__}: {e}"
         )
 
-        apagar_arquivo(
-            arquivo
+        if arquivo:
+            apagar_arquivo(arquivo)
+
+        await interaction.edit_original_response(
+            content=f"❌ ERRO MEDAL: {type(e).__name__}: {e}"
         )
-
-        try:
-
-            await interaction.edit_original_response(
-                content=(
-                    "❌ Não consegui enviar o vídeo.\n"
-                    f"Motivo: {erro}"
-                )
-            )
-
-        except Exception:
-            pass
 
 
 # =========================================================
-# BOT ONLINE
+# BOT ONLINE / SINCRONIZAÇÃO DOS COMANDOS
 # =========================================================
 
 @bot.event
@@ -1110,39 +815,36 @@ async def on_ready():
 
     try:
 
-        await tree.sync()
+        comandos = await tree.sync()
 
         print(
-            f"✅ BYD Extrator conectado como "
-            f"{bot.user}"
+            f"✅ Bot conectado como {bot.user}"
         )
 
         print(
-            "✅ Comandos sincronizados."
+            f"✅ {len(comandos)} comandos sincronizados:"
         )
 
-    except Exception as erro:
+        for comando in comandos:
+            print(
+                f"   /{comando.name}"
+            )
+
+    except Exception as e:
 
         print(
-            f"❌ ERRO AO SINCRONIZAR: "
-            f"{type(erro).__name__}: {erro}"
+            f"❌ ERRO AO SINCRONIZAR COMANDOS: "
+            f"{type(e).__name__}: {e}"
         )
 
 
 # =========================================================
-# INICIAR
+# INICIAR BOT
 # =========================================================
 
 if not TOKEN:
-
-    print(
-        "❌ DISCORD_TOKEN não encontrado."
+    raise RuntimeError(
+        "DISCORD_TOKEN não foi encontrado nas variáveis do Railway."
     )
 
-else:
-
-    print(
-        "🚀 Iniciando BYD Extrator..."
-    )
-
-    bot.run(TOKEN)
+bot.run(TOKEN)
