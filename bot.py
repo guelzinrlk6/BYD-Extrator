@@ -51,16 +51,14 @@ def encontrar_ffmpeg():
 
 
 def baixar_audio(link):
-    """
-    Baixa TikTok ou SoundCloud e converte para MP3.
-    """
-
     link_lower = link.lower()
 
     if "tiktok.com" in link_lower:
         prefixo = "tiktok"
+
     elif "soundcloud.com" in link_lower:
         prefixo = "soundcloud"
+
     else:
         raise ValueError(
             "O link precisa ser do TikTok ou SoundCloud."
@@ -140,7 +138,6 @@ async def extrair(
 
         if "tiktok.com" in link_lower:
             plataforma = "TikTok"
-
         else:
             plataforma = "SoundCloud"
 
@@ -155,9 +152,9 @@ async def extrair(
 
         audio_id = info.get("id")
 
-        # -------------------------------------------------
-        # Procura o arquivo pelo ID
-        # -------------------------------------------------
+        # =================================================
+        # PROCURA PELO ID
+        # =================================================
 
         if audio_id:
 
@@ -169,9 +166,9 @@ async def extrair(
             if os.path.exists(possivel):
                 arquivo = possivel
 
-        # -------------------------------------------------
-        # Fallback: procura o MP3 mais recente
-        # -------------------------------------------------
+        # =================================================
+        # FALLBACK
+        # =================================================
 
         if not arquivo:
 
@@ -196,9 +193,9 @@ async def extrair(
 
                 arquivo = arquivos[0]
 
-        # -------------------------------------------------
-        # Verifica se encontrou
-        # -------------------------------------------------
+        # =================================================
+        # VERIFICA ARQUIVO
+        # =================================================
 
         if not arquivo or not os.path.exists(arquivo):
 
@@ -213,9 +210,9 @@ async def extrair(
             f"{tamanho / 1024 / 1024:.2f} MB"
         )
 
-        # -------------------------------------------------
-        # Verifica limite do Discord
-        # -------------------------------------------------
+        # =================================================
+        # LIMITE DISCORD
+        # =================================================
 
         if tamanho > LIMITE_DISCORD:
 
@@ -230,9 +227,9 @@ async def extrair(
 
             return
 
-        # -------------------------------------------------
-        # Envia
-        # -------------------------------------------------
+        # =================================================
+        # ENVIA COM O NOME EQP BYD
+        # =================================================
 
         await interaction.edit_original_response(
             content=f"📤 Enviando áudio do {plataforma}..."
@@ -243,7 +240,7 @@ async def extrair(
             await interaction.followup.send(
                 file=discord.File(
                     arquivo,
-                    filename="audio.mp3"
+                    filename="Eqp Byd.mp3"
                 )
             )
 
